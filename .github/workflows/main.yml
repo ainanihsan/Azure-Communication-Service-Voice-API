@@ -27,7 +27,6 @@ jobs:
         run: |
           cd scripts
           ./provision.ps1
-          cd ..
           if (-not (Test-Path "outputs.json")) {
             Write-Error "outputs.json not found, provisioning failed"
             exit 1
@@ -37,7 +36,7 @@ jobs:
         id: parse
         shell: pwsh
         run: |
-          $outputs = Get-Content outputs.json | ConvertFrom-Json
+          $outputs = Get-Content scripts/outputs.json | ConvertFrom-Json
           $FN_NAME = $outputs.functionApp.name
           $KV_NAME = $outputs.keyVault.name
           $RG_NAME = $outputs.resourceGroup
