@@ -1,15 +1,26 @@
-# Azure Communication Service - Setup Guide
+# Azure Communication Service - Voice API Demo
 
-This project provisions Azure resources for an Azure Communication Service voice calling demo and deploys an Azure Function App.
+This project demonstrates Infrastructure as Code (IaC) for Azure Communication Service with automated deployment using GitHub Actions. It provisions Azure resources and deploys a Function App that can make outbound calls via ACS Voice API.
+
+## 📋 Project Requirements
+
+✅ **Infrastructure as Code**: Automated Azure resource provisioning  
+✅ **CI/CD Pipeline**: GitHub Actions workflow with OIDC authentication  
+✅ **Voice API Integration**: Function App to invoke ACS for outbound calls  
+✅ **Security Best Practices**: Managed Identity, Key Vault, RBAC, no hardcoded secrets  
+✅ **Monitoring**: Application Insights integration ready
 
 ## Prerequisites
 
 - Azure subscription with Contributor access
 - Azure CLI installed and logged in (`az login`)
-- .NET 8.0 SDK
+- .NET 8.0 SDK (for local development)
 - PowerShell 7+ (for running scripts)
+- GitHub account
 
-## Quick Start (Local Development)
+## 🚀 Quick Start (Local Development)
+
+If you just want to test locally without GitHub Actions:
 
 ### 1. Provision Azure Resources
 
@@ -22,9 +33,10 @@ This script will:
 - Create a resource group
 - Provision Azure Communication Service, Storage Account, Key Vault, and Function App
 - Store the ACS connection string in Key Vault
+- Configure managed identity and RBAC permissions
 - Output resource details to `outputs.json`
 
-**Note:** The script uses **fixed resource names** for idempotency. If resources already exist, it will reuse them.
+**Note:** Uses fixed resource names for idempotency. Safe to run multiple times.
 
 ### 2. Build and Deploy Function App
 
@@ -34,114 +46,199 @@ dotnet restore
 dotnet build
 dotnet publish -c Release -o ./publish
 
-# Deploy (manual)
+# Create deployment package
+Compress-Archive -Path publish\* -DestinationPath deploy.zip -Force
+
+# Deploy to Azure
 az functionapp deployment source config-zip `
   -g rg-acs-demo-cli `
   -n fn-acs-demo-cli-001 `
-  --src ./publish.zip
+  --src ./deploy.zip
 ```
 
-## GitHub Actions Setup (Optional)
+## 🔐 GitHub Actions Setup (CI/CD Pipeline)
 
-To enable automated deployment via GitHub Actions:
+### Overview
+The GitHub Actions workflow uses **OpenID Connect (OIDC)** for secure, passwordless authentication to Azure. This eliminates the need for storing credentials as secrets.
 
-### 1. Create Azure Service Principal for OIDC
+### Step 1: Create Azure AD App Registration
 
 ```powershell
-# Replace with your values
-$subscriptionId = "<YOUR_SUBSCRIPTION_ID>"
-$githubOrg = "<YOUR_GITHUB_USERNAME>"
-$githubRepo = "<YOUR_REPO_NAME>"
+# Create the app registration
+$APP_ID = az ad app create --display-name "github-oidc-ACS-Voice-API" --query appId -o tsv
 
-# Create app registration
-az ad app create --display-name "GitHub-Actions-OIDC"
+Write-Host "✓ App Registration created"
+Write-Host "Client ID: $APP_ID" -ForegroundColor Yellow
+```
 
-# Get the app ID
-$appId = az ad app list --display-name "GitHub-Actions-OIDC" --query "[0].appId" -o tsv
+### Step 2: Create Federated Credential for GitHub OIDC
 
-# Create service principal
-az ad sp create --id $appId
+```powershell
+# Get your tenant ID
+$TENANT_ID = az account show --query tenantId -o tsv
 
-# Create federated credential for GitHub Actions
+# Create federated credential configuration
+# IMPORTANT: Replace 'ainanihsan' with YOUR GitHub username
+# IMPORTANT: Replace 'Azure-Communication-Service-Voice-API' with YOUR repo name
+@"
+{
+  "name": "github-oidc-main-branch",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:YOUR_GITHUB_USERNAME/YOUR_REPO_NAME:ref:refs/heads/main",
+  "audiences": [
+    "api://AzureADTokenExchange"
+  ]
+}
+"@ | Out-File -FilePath federated.json -Encoding utf8
+
+# Create the federated credential
 az ad app federated-credential create `
-  --id $appId `
-  --parameters '{
-    "name": "GitHubActions",
-    "issuer": "https://token.actions.githubusercontent.com",
-    "subject": "repo:'$githubOrg'/'$githubRepo':ref:refs/heads/main",
-    "audiences": ["api://AzureADTokenExchange"]
-  }'
+  --id $APP_ID `
+  --parameters federated.json
+
+# Verify it was created
+az ad app federated-credential list --id $APP_ID -o table
+
+Write-Host "✓ Federated credential created" -ForegroundColor Green
 ```
 
-### 2. Grant Permissions to Service Principal
+### Step 3: Assign Azure Roles to Service Principal
 
 ```powershell
-cd scripts
+# Get your subscription ID
+$subscriptionId = az account show --query id -o tsv
 
-# Run the setup script with your service principal's client ID
-./setup-github-permissions.ps1 -ClientId $appId
+# The $APP_ID from Step 1 is your service principal's client ID
+# Assign Contributor role (for creating/managing resources)
+az role assignment create `
+  --assignee $APP_ID `
+  --role "Contributor" `
+  --scope "/subscriptions/$subscriptionId"
+
+# Assign User Access Administrator role (for assigning roles to managed identities)
+az role assignment create `
+  --assignee $APP_ID `
+  --role "User Access Administrator" `
+  --scope "/subscriptions/$subscriptionId"
+
+Write-Host "✓ Roles assigned to service principal" -ForegroundColor Green
 ```
 
-### 3. Configure GitHub Secrets
+### Step 4: Configure GitHub Secrets
 
-Add these secrets to your GitHub repository (Settings → Secrets and variables → Actions):
+Go to your GitHub repository:
+- **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
 
-- `AZURE_CLIENT_ID`: Your service principal's App ID
-- `AZURE_TENANT_ID`: Your Azure tenant ID (`az account show --query tenantId -o tsv`)
-- `AZURE_SUBSCRIPTION_ID`: Your subscription ID
+Add these three secrets:
 
-### 4. Run GitHub Actions Workflow
-
-Go to Actions → "Provision and Deploy (OIDC)" → Run workflow
-
-## Resource Names
-
-The following fixed names are used (can be customized in `scripts/provision.ps1`):
-
-- Resource Group: `rg-acs-demo-cli`
-- ACS: `acs-demo-cli-prod`
-- Storage: `stacsdemo001`
-- Key Vault: `kv-acs-demo-cli-001`
-- Function App: `fn-acs-demo-cli-001`
-
-## Testing the Function
-
-After deployment, test the MakeCall function:
+| Secret Name | Value | How to Get |
+|-------------|-------|------------|
+| `AZURE_CLIENT_ID` | Your App ID from Step 1 | `echo $APP_ID` |
+| `AZURE_TENANT_ID` | Your Azure tenant ID | `az account show --query tenantId -o tsv` |
+| `AZURE_SUBSCRIPTION_ID` | Your subscription ID | `az account show --query id -o tsv` |
 
 ```powershell
-# Get function key
-$key = az functionapp function keys list `
-  -g rg-acs-demo-cli `
-  -n fn-acs-demo-cli-001 `
-  --function-name MakeCall `
-  --query default -o tsv
-
-# Call the function
-$url = "https://fn-acs-demo-cli-001.azurewebsites.net/api/MakeCall?code=$key"
-
-Invoke-RestMethod -Uri $url -Method POST -Body '{"to":"+1234567890","from":"+0987654321"}' -ContentType "application/json"
+# Display values for GitHub Secrets
+Write-Host "`nGitHub Secrets Configuration:" -ForegroundColor Cyan
+Write-Host "AZURE_CLIENT_ID: $APP_ID" -ForegroundColor White
+Write-Host "AZURE_TENANT_ID: $TENANT_ID" -ForegroundColor White
+Write-Host "AZURE_SUBSCRIPTION_ID: $subscriptionId" -ForegroundColor White
 ```
 
-## Troubleshooting
+### Step 5: Run the Workflow
 
-### Permission Errors in GitHub Actions
+1. Go to your GitHub repository
+2. Click **Actions** tab
+3. Select **"Provision and Deploy (OIDC)"** workflow
+4. Click **"Run workflow"** → **"Run workflow"**
 
-If you see "AuthorizationFailed" errors, ensure the service principal has these roles:
-- **Contributor** (Resource Group scope)
-- **User Access Administrator** (Resource Group scope)
-- **Key Vault Secrets Officer** (Key Vault scope)
+The workflow will:
+- ✅ Authenticate to Azure using OIDC (no passwords!)
+- ✅ Provision all Azure resources
+- ✅ Build and deploy the Function App
+- ✅ Configure app settings
+- ✅ Run smoke tests
 
-Run `./scripts/setup-github-permissions.ps1` to grant these automatically.
+## 📖 Complete Setup Script (Copy-Paste Ready)
 
-### Resources Already Exist
-
-The provision script is idempotent - it will reuse existing resources with the same names. To start fresh, delete the resource group:
+For convenience, here's a complete script you can run:
 
 ```powershell
-az group delete -n rg-acs-demo-cli --yes
+# ===== GitHub Actions OIDC Setup Script =====
+
+Write-Host "Setting up GitHub Actions OIDC for Azure..." -ForegroundColor Cyan
+
+# STEP 1: Create App Registration
+Write-Host "`n[1/4] Creating Azure AD App Registration..." -ForegroundColor Yellow
+$APP_ID = az ad app create --display-name "github-oidc-ACS-Voice-API" --query appId -o tsv
+Write-Host "✓ Client ID: $APP_ID" -ForegroundColor Green
+
+# STEP 2: Get IDs
+$TENANT_ID = az account show --query tenantId -o tsv
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+
+# STEP 3: Create Federated Credential
+Write-Host "`n[2/4] Creating federated credential..." -ForegroundColor Yellow
+Write-Host "⚠️  IMPORTANT: Update the 'subject' field with YOUR GitHub username and repo name!" -ForegroundColor Red
+
+@"
+{
+  "name": "github-oidc-main-branch",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:YOUR_GITHUB_USERNAME/YOUR_REPO_NAME:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+"@ | Out-File -FilePath federated.json -Encoding utf8
+
+Write-Host "Please edit federated.json and update YOUR_GITHUB_USERNAME and YOUR_REPO_NAME"
+Write-Host "Press Enter when ready to continue..."
+Read-Host
+
+az ad app federated-credential create --id $APP_ID --parameters federated.json
+Write-Host "✓ Federated credential created" -ForegroundColor Green
+
+# STEP 4: Assign Roles
+Write-Host "`n[3/4] Assigning Azure roles..." -ForegroundColor Yellow
+az role assignment create --assignee $APP_ID --role "Contributor" --scope "/subscriptions/$SUBSCRIPTION_ID"
+az role assignment create --assignee $APP_ID --role "User Access Administrator" --scope "/subscriptions/$SUBSCRIPTION_ID"
+Write-Host "✓ Roles assigned" -ForegroundColor Green
+
+# STEP 5: Display GitHub Secrets
+Write-Host "`n[4/4] GitHub Secrets Configuration:" -ForegroundColor Cyan
+Write-Host "Add these secrets to your GitHub repository (Settings → Secrets and variables → Actions):"
+Write-Host ""
+Write-Host "AZURE_CLIENT_ID      = $APP_ID" -ForegroundColor White
+Write-Host "AZURE_TENANT_ID      = $TENANT_ID" -ForegroundColor White
+Write-Host "AZURE_SUBSCRIPTION_ID = $SUBSCRIPTION_ID" -ForegroundColor White
+Write-Host ""
+Write-Host "✓ Setup complete! You can now run the GitHub Actions workflow." -ForegroundColor Green
 ```
 
-## Architecture
+Save this as `scripts/setup-github-oidc.ps1` and run it.
+
+## 🔒 Security Best Practices Implemented
+
+### 1. **No Hardcoded Secrets**
+- ✅ Uses Azure Managed Identity for Function App
+- ✅ ACS connection string stored in Key Vault
+- ✅ GitHub Actions uses OIDC (no service principal passwords)
+
+### 2. **Least Privilege Access**
+- ✅ Function App has only "Key Vault Secrets Officer" role
+- ✅ Key Vault uses RBAC authorization (not access policies)
+- ✅ Service principal has minimal required roles
+
+### 3. **Secret Management**
+- ✅ Key Vault for sensitive data (ACS connection string)
+- ✅ Environment variables for configuration (KEY_VAULT_URI)
+- ✅ No secrets in source code or logs
+
+### 4. **Federated Identity**
+- ✅ OIDC eliminates credential storage in GitHub
+- ✅ Short-lived tokens per workflow run
+- ✅ Scoped to specific repository and branch
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -174,4 +271,95 @@ az group delete -n rg-acs-demo-cli --yes
                    ┌──────┴──────┐
                    │   Client    │
                    └─────────────┘
+```
+
+## 📞 Testing the Voice API
+
+After deployment, test the MakeCall function:
+
+```powershell
+# Get the function key
+$FN = "fn-acs-demo-cli-001"
+$RG = "rg-acs-demo-cli"
+
+$key = az functionapp function keys list `
+  -g $RG `
+  -n $FN `
+  --function-name MakeCall `
+  --query default -o tsv
+
+# Call the function with phone numbers in E.164 format
+$url = "https://$FN.azurewebsites.net/api/MakeCall?code=$key"
+
+$body = @{
+  to = "+1234567890"    # Destination phone number
+  from = "+0987654321"  # Your ACS phone number
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri $url -Method POST -Body $body -ContentType "application/json"
+```
+
+**Note:** You need to:
+1. Acquire a phone number in your ACS resource via Azure Portal
+2. Use that number in the `from` field
+3. Use a valid destination number in the `to` field
+
+## 📊 Monitoring & Logging
+
+### Application Insights (Optional)
+
+To enable Application Insights monitoring:
+
+```powershell
+# Create Application Insights
+az monitor app-insights component create `
+  --app fn-acs-demo-cli-001-insights `
+  --location swedencentral `
+  --resource-group rg-acs-demo-cli
+
+# Get the connection string
+$AI_CONN = az monitor app-insights component show `
+  --app fn-acs-demo-cli-001-insights `
+  -g rg-acs-demo-cli `
+  --query connectionString -o tsv
+
+# Configure Function App
+az functionapp config appsettings set `
+  -g rg-acs-demo-cli `
+  -n fn-acs-demo-cli-001 `
+  --settings APPLICATIONINSIGHTS_CONNECTION_STRING=$AI_CONN
+```
+
+### View Logs
+
+```powershell
+# Stream Function App logs
+az functionapp log tail -g rg-acs-demo-cli -n fn-acs-demo-cli-001
+
+# View ACS logs in Azure Portal
+# Navigate to: Communication Service → Monitoring → Logs
+# Query example:
+# ACSCallAutomationOperations
+# | where TimeGenerated > ago(1h)
+# | project TimeGenerated, OperationName, ResultType, ResultSignature
+```
+
+## 📁 Project Structure
+
+```
+├── .github/
+│   └── workflows/
+│       └── main.yml                    # GitHub Actions CI/CD workflow
+├── FunctionApp/
+│   └── FunctionAppACS/
+│       └── FunctionAppACS/
+│           ├── MakeCall.cs             # Voice API function
+│           ├── Program.cs              # Function host configuration
+│           ├── FunctionAppACS.csproj   # Project file
+│           └── local.settings.json     # Local development settings
+├── scripts/
+│   ├── provision.ps1                   # Azure resource provisioning
+│   ├── setup-github-permissions.ps1    # Permission setup helper
+│   └── outputs.json                    # Provisioned resource details
+└── README.md                           # This file
 ```
