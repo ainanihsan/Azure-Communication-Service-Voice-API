@@ -27,7 +27,8 @@ jobs:
         run: |
           cd scripts
           ./provision.ps1
-          if (-not (Test-Path "../outputs.json")) {
+          cd ..
+          if (-not (Test-Path "outputs.json")) {
             Write-Error "outputs.json not found, provisioning failed"
             exit 1
           }
