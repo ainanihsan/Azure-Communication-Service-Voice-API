@@ -48,16 +48,33 @@ jobs:
           "rg_name=$RG_NAME" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build function app
-        working-directory: FunctionApp/FunctionAppACS
+        shell: pwsh
         run: |
+          cd FunctionApp/FunctionAppACS/FunctionAppACS
           dotnet restore
-          dotnet publish -c Release -o publish
+          dotnet clean
+          dotnet build -c Release
+          dotnet publish -c Release -o ../../../publish
+
+      - name: Verify publish output
+        shell: pwsh
+        run: |
+          Write-Host "Checking published files..."
+          Get-ChildItem -Path publish -Recurse | Select-Object FullName | Format-Table
+          
+          if (Test-Path "publish/FunctionAppACS.dll") {
+            Write-Host "✓ Function DLL found" -ForegroundColor Green
+          } else {
+            Write-Error "Function DLL not found in publish folder"
+          }
 
       - name: Package function zip
         shell: pwsh
         run: |
-          cd FunctionApp/FunctionAppACS/publish
-          Compress-Archive -Path * -DestinationPath ../../../deploy.zip -Force
+          cd publish
+          Compress-Archive -Path * -DestinationPath ../deploy.zip -Force
+          cd ..
+          Write-Host "Deploy package size: $((Get-Item deploy.zip).Length / 1MB) MB"
 
       - name: Deploy zip to Function App
         shell: pwsh
