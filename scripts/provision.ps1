@@ -1,18 +1,28 @@
 <#
-scripts/full_provision.ps1
-Complete idempotent PowerShell + Azure CLI provisioning script.
-Edit the top variables if you want. Run in PowerShell after az login.
-
-What it does:
-- register required providers
-- create resource group
-- create Azure Communication Service
-- create storage account
-- create Key Vault with RBAC enabled
-- fetch ACS primary key and store connection string in Key Vault
-- create Function App with system assigned identity
-- assign Key Vault data role "Key Vault Secrets User" to the Function identity
-- write outputs.json
+.SYNOPSIS
+    Complete Azure resource provisioning for ACS demo
+    
+.DESCRIPTION
+    Idempotent PowerShell + Azure CLI provisioning script.
+    Works for both local development and GitHub Actions.
+    
+    For local use: Run after 'az login' with your account
+    For GitHub Actions: Requires service principal with proper permissions
+    
+.NOTES
+    What it does:
+    - Register required Azure resource providers
+    - Create resource group
+    - Provision Azure Communication Service
+    - Create storage account
+    - Create Key Vault with RBAC enabled
+    - Fetch ACS primary key and store connection string in Key Vault
+    - Create Function App with system assigned identity
+    - Assign Key Vault Secrets Officer role to Function identity
+    - Write outputs.json
+    
+    Uses fixed resource names for idempotency - safe to run multiple times.
+    If permission errors occur, role assignments will be skipped with warnings.
 #>
 
 # ---------- Config - edit before running if you want ----------
@@ -163,23 +173,37 @@ if (-not $spReady) {
 
 # 9) Assign Key Vault data role to Function identity
 if ($funcPrincipalId) {
-  Write-Info "Assigning Key Vault Secrets Officer to Function id at vault scope using assignee-object-id"
-
-  # Try assignment with retries to allow AAD propagation
-  $assigned = $false
-  for ($attempt = 1; $attempt -le 6; $attempt++) {
-    try {
-      az role assignment create --assignee-object-id $funcPrincipalId --assignee-principal-type ServicePrincipal --role "Key Vault Secrets Officer" --scope $vaultId | Out-Null
-      Write-Ok "Role assignment requested (attempt $attempt)"
-      $assigned = $true
-      break
-    } catch {
-      Write-Warn "Role assignment attempt $attempt failed. Waiting and retrying."
-      Start-Sleep -Seconds (5 * $attempt)
+  # Check if role is already assigned
+  $existingRole = az role assignment list --assignee $funcPrincipalId --scope $vaultId --role "Key Vault Secrets Officer" -o json 2>$null | ConvertFrom-Json
+  
+  if ($existingRole -and $existingRole.Count -gt 0) {
+    Write-Ok "Key Vault Secrets Officer role already assigned"
+    $assigned = $true
+  } else {
+    Write-Info "Assigning Key Vault Secrets Officer to Function id at vault scope"
+    
+    # Try assignment with retries to allow AAD propagation
+    $assigned = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+      try {
+        az role assignment create --assignee-object-id $funcPrincipalId --assignee-principal-type ServicePrincipal --role "Key Vault Secrets Officer" --scope $vaultId --only-show-errors 2>&1 | Out-Null
+        Write-Ok "Role assignment created"
+        $assigned = $true
+        break
+      } catch {
+        $errorMsg = $_.Exception.Message
+        if ($errorMsg -like "*AuthorizationFailed*" -or $errorMsg -like "*does not have authorization*") {
+          Write-Warn "Service principal lacks permission to assign roles. Skipping - assign manually if needed."
+          Write-Info "Run: az role assignment create --assignee-object-id $funcPrincipalId --assignee-principal-type ServicePrincipal --role 'Key Vault Secrets Officer' --scope $vaultId"
+          break
+        }
+        if ($attempt -lt 3) {
+          Write-Warn "Role assignment attempt $attempt failed. Retrying..."
+          Start-Sleep -Seconds (5 * $attempt)
+        }
+      }
     }
-  }
-
-  if (-not $assigned) {
+  }  if (-not $assigned) {
     Write-Warn "Could not assign role to function identity after multiple attempts. The identity may not have propagated to AAD or your caller lacks permission to assign roles."
   } else {
     # verify assignment visible
@@ -216,13 +240,15 @@ if ($acsConn) {
   }
 
   if (-not $callerObjectId) {
-    Write-Warn "Could not determine caller object id. Attempting to set secret directly and will report errors."
+    Write-Warn "Could not determine caller object id. Attempting to set secret directly."
     try {
-      az keyvault secret set --vault-name $kvName -n "AcsConnectionString" --value $acsConn | Out-Null
+      az keyvault secret set --vault-name $kvName -n "AcsConnectionString" --value $acsConn --only-show-errors 2>&1 | Out-Null
       Write-Ok "Stored AcsConnectionString in Key Vault"
       $secretStored = $true
     } catch {
-      Write-Warn "Could not store secret. This is likely an RBAC or permission issue for the current caller."
+      Write-Warn "Could not store secret - RBAC permission issue. Secret must be set manually or grant 'Key Vault Secrets Officer' role to the caller."
+      Write-Info "Manual command: az keyvault secret set --vault-name $kvName -n AcsConnectionString --value '<CONNECTION_STRING>'"
+      $secretStored = $false
     }
   } else {
     # Check whether caller already has the Key Vault Secrets Officer role at the vault scope
