@@ -22,59 +22,68 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           enable-AzPSSession: true
 
-      - name: Run provisioning script
+      - name: Make provisioning script executable and run it
+        shell: bash
         run: |
-          # make sure script is executable
-          chmod +x "Azure Communication Service Workflow/scripts/provision.sh"
-          ./ "Azure Communication Service Workflow/scripts/provision.sh"
+          chmod +x ./scripts/provision.sh
+          ./scripts/provision.sh
           if [ ! -f outputs.json ]; then
             echo "outputs.json not found, provisioning failed" >&2
             exit 1
           fi
-        shell: bash
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Parse outputs.json
         id: parse
+        shell: bash
         run: |
           FN_NAME=$(jq -r '.functionApp.name' outputs.json)
           KV_NAME=$(jq -r '.keyVault.name' outputs.json)
+          RG_NAME=$(jq -r '.resourceGroup' outputs.json)
           if [ -z "$FN_NAME" ] || [ "$FN_NAME" = "null" ]; then echo "Missing functionApp.name in outputs.json" >&2; exit 1; fi
           if [ -z "$KV_NAME" ] || [ "$KV_NAME" = "null" ]; then echo "Missing keyVault.name in outputs.json" >&2; exit 1; fi
+          if [ -z "$RG_NAME" ] || [ "$RG_NAME" = "null" ]; then echo "Missing resourceGroup in outputs.json" >&2; exit 1; fi
           echo "fn_name=$FN_NAME" >> $GITHUB_OUTPUT
           echo "kv_name=$KV_NAME" >> $GITHUB_OUTPUT
+          echo "rg_name=$RG_NAME" >> $GITHUB_OUTPUT
 
       - name: Build function app
-        working-directory: "Azure Communication Service Workflow/FunctionApp/FunctionAppACS"
+        working-directory: FunctionApp/FunctionAppACS
         run: |
           dotnet restore
           dotnet publish -c Release -o publish
 
       - name: Package function zip
-        run: |
-          cd "Azure Communication Service Workflow/FunctionApp/FunctionAppACS/publish"
-          zip -r ../../../deploy.zip . -q
         shell: bash
+        run: |
+          cd FunctionApp/FunctionAppACS/publish
+          # create deploy.zip at repo root
+          zip -r ../../../deploy.zip . -q
 
       - name: Deploy zip to Function App
+        shell: bash
         run: |
           FN=${{ steps.parse.outputs.fn_name }}
-          az functionapp deployment source config-zip -g rg-acs-demo-cli -n "$FN" --src ./Azure\ Communication\ Service\ Workflow/FunctionApp/FunctionAppACS/deploy.zip
+          RG=${{ steps.parse.outputs.rg_name }}
+          az functionapp deployment source config-zip -g "$RG" -n "$FN" --src ./deploy.zip
 
       - name: Configure app settings (KEY_VAULT_URI and CALLBACK_URI)
+        shell: bash
         run: |
           FN=${{ steps.parse.outputs.fn_name }}
           KV=${{ steps.parse.outputs.kv_name }}
+          RG=${{ steps.parse.outputs.rg_name }}
           KV_URI="https://${KV}.vault.azure.net/"
           CALLBACK="https://${FN}.azurewebsites.net/api/CallEvents"
-          az functionapp config appsettings set -g rg-acs-demo-cli -n "$FN" --settings KEY_VAULT_URI="$KV_URI" CALLBACK_URI="$CALLBACK"
+          az functionapp config appsettings set -g "$RG" -n "$FN" --settings KEY_VAULT_URI="$KV_URI" CALLBACK_URI="$CALLBACK"
 
       - name: Fetch function key and smoke test
+        shell: bash
         run: |
           FN=${{ steps.parse.outputs.fn_name }}
-          RG="rg-acs-demo-cli"
+          RG=${{ steps.parse.outputs.rg_name }}
           KEY_JSON=$(az functionapp function keys list -g "$RG" -n "$FN" --function-name MakeCall -o json)
           KEY=$(echo "$KEY_JSON" | jq -r '.default')
           if [ -z "$KEY" ] || [ "$KEY" = "null" ]; then
