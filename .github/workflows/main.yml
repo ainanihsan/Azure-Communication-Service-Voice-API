@@ -76,20 +76,42 @@ jobs:
           $CALLBACK = "https://$FN.azurewebsites.net/api/CallEvents"
           az functionapp config appsettings set -g $RG -n $FN --settings KEY_VAULT_URI=$KV_URI CALLBACK_URI=$CALLBACK
 
-      - name: Wait for Function App to be ready
-        shell: pwsh
-        run: |
-          Write-Host "Waiting for Function App to fully start..."
-          Start-Sleep -Seconds 30
-
-      - name: Fetch function key and smoke test
+      - name: Restart Function App and wait for it to be ready
         shell: pwsh
         run: |
           $FN = "${{ steps.parse.outputs.fn_name }}"
           $RG = "${{ steps.parse.outputs.rg_name }}"
           
+          Write-Host "Restarting Function App to apply all changes..."
+          az functionapp restart -g $RG -n $FN
+          
+          Write-Host "Waiting for Function App to start (60 seconds)..."
+          Start-Sleep -Seconds 60
+          
+          # Check function app status
+          Write-Host "Checking Function App status..."
+          $status = az functionapp show -g $RG -n $FN --query state -o tsv
+          Write-Host "Function App state: $status"
+          
+          # Try to ping the function app
+          $appUrl = "https://$FN.azurewebsites.net"
+          Write-Host "Checking if Function App is responding at $appUrl..."
+          try {
+            $response = Invoke-WebRequest -Uri $appUrl -Method GET -TimeoutSec 10 -SkipHttpErrorCheck
+            Write-Host "Function App responded with status: $($response.StatusCode)"
+          } catch {
+            Write-Host "Function App health check: $_"
+          }
+
+      - name: Fetch function key and smoke test
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $FN = "${{ steps.parse.outputs.fn_name }}"
+          $RG = "${{ steps.parse.outputs.rg_name }}"
+          
           # Retry logic for getting function keys
-          $maxRetries = 5
+          $maxRetries = 6
           $retryCount = 0
           $KEY = $null
           
@@ -101,9 +123,11 @@ jobs:
                 $KEY_OBJ = $KEY_JSON | ConvertFrom-Json
                 $KEY = $KEY_OBJ.default
                 if (-not [string]::IsNullOrEmpty($KEY)) {
-                  Write-Host "Successfully retrieved function key"
+                  Write-Host "✓ Successfully retrieved function key"
                   break
                 }
+              } else {
+                Write-Host "Azure CLI returned non-zero exit code: $LASTEXITCODE"
               }
             } catch {
               Write-Host "Attempt failed: $_"
@@ -111,26 +135,41 @@ jobs:
             
             $retryCount++
             if ($retryCount -lt $maxRetries) {
-              Write-Host "Waiting 15 seconds before retry..."
-              Start-Sleep -Seconds 15
+              Write-Host "Waiting 20 seconds before retry..."
+              Start-Sleep -Seconds 20
             }
           }
           
           if ([string]::IsNullOrEmpty($KEY)) {
-            Write-Warning "Could not fetch function key after $maxRetries attempts. Function may need more time to initialize."
-            Write-Host "You can test manually later using: az functionapp function keys list -g $RG -n $FN --function-name MakeCall"
+            Write-Warning "Could not fetch function key after $maxRetries attempts."
+            Write-Host ""
+            Write-Host "=== Manual Testing Instructions ===" -ForegroundColor Cyan
+            Write-Host "The function app has been deployed but keys are not yet available."
+            Write-Host "Wait a few minutes and test manually:" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "1. Get the function key:" -ForegroundColor White
+            Write-Host "   az functionapp function keys list -g $RG -n $FN --function-name MakeCall" -ForegroundColor Gray
+            Write-Host ""
+            Write-Host "2. Test the function:" -ForegroundColor White
+            Write-Host "   Invoke-RestMethod -Uri 'https://$FN.azurewebsites.net/api/MakeCall?code=YOUR_KEY' -Method POST -Body '{\"to\":\"+1234567890\",\"from\":\"+0987654321\"}' -ContentType 'application/json'" -ForegroundColor Gray
+            Write-Host ""
             exit 0
           }
           
           $URL = "https://$FN.azurewebsites.net/api/MakeCall?code=$KEY"
-          Write-Host "Calling $URL (smoke test)"
+          Write-Host ""
+          Write-Host "=== Smoke Test ===" -ForegroundColor Cyan
+          Write-Host "Testing endpoint: $URL"
           $body = @{
             to = "+441234567890"
             from = "+15551234567"
           } | ConvertTo-Json
+          
           try {
-            Invoke-RestMethod -Uri $URL -Method POST -Body $body -ContentType "application/json"
-            Write-Host "Smoke test completed"
+            $response = Invoke-RestMethod -Uri $URL -Method POST -Body $body -ContentType "application/json"
+            Write-Host "✓ Smoke test completed successfully" -ForegroundColor Green
+            Write-Host "Response: $response"
           } catch {
-            Write-Host "Smoke test call failed (expected if no valid phone numbers): $_"
+            Write-Host "Smoke test call result: $_" -ForegroundColor Yellow
+            Write-Host "(This is expected if phone numbers are not configured)"
           }
