@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   run-all:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,35 +19,33 @@ jobs:
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}  
           enable-AzPSSession: true
 
-      - name: Make provisioning script executable and run it
-        shell: bash
+      - name: Run provisioning script
+        shell: pwsh
         run: |
-          chmod +x ./scripts/provision.sh
-          ./scripts/provision.sh
-          if [ ! -f outputs.json ]; then
-            echo "outputs.json not found, provisioning failed" >&2
+          cd scripts
+          ./provision.ps1
+          if (-not (Test-Path "../outputs.json")) {
+            Write-Error "outputs.json not found, provisioning failed"
             exit 1
-          fi
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+          }
 
       - name: Parse outputs.json
         id: parse
-        shell: bash
+        shell: pwsh
         run: |
-          FN_NAME=$(jq -r '.functionApp.name' outputs.json)
-          KV_NAME=$(jq -r '.keyVault.name' outputs.json)
-          RG_NAME=$(jq -r '.resourceGroup' outputs.json)
-          if [ -z "$FN_NAME" ] || [ "$FN_NAME" = "null" ]; then echo "Missing functionApp.name in outputs.json" >&2; exit 1; fi
-          if [ -z "$KV_NAME" ] || [ "$KV_NAME" = "null" ]; then echo "Missing keyVault.name in outputs.json" >&2; exit 1; fi
-          if [ -z "$RG_NAME" ] || [ "$RG_NAME" = "null" ]; then echo "Missing resourceGroup in outputs.json" >&2; exit 1; fi
-          echo "fn_name=$FN_NAME" >> $GITHUB_OUTPUT
-          echo "kv_name=$KV_NAME" >> $GITHUB_OUTPUT
-          echo "rg_name=$RG_NAME" >> $GITHUB_OUTPUT
+          $outputs = Get-Content outputs.json | ConvertFrom-Json
+          $FN_NAME = $outputs.functionApp.name
+          $KV_NAME = $outputs.keyVault.name
+          $RG_NAME = $outputs.resourceGroup
+          if ([string]::IsNullOrEmpty($FN_NAME)) { Write-Error "Missing functionApp.name in outputs.json"; exit 1 }
+          if ([string]::IsNullOrEmpty($KV_NAME)) { Write-Error "Missing keyVault.name in outputs.json"; exit 1 }
+          if ([string]::IsNullOrEmpty($RG_NAME)) { Write-Error "Missing resourceGroup in outputs.json"; exit 1 }
+          "fn_name=$FN_NAME" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "kv_name=$KV_NAME" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "rg_name=$RG_NAME" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build function app
         working-directory: FunctionApp/FunctionAppACS
@@ -56,41 +54,47 @@ jobs:
           dotnet publish -c Release -o publish
 
       - name: Package function zip
-        shell: bash
+        shell: pwsh
         run: |
           cd FunctionApp/FunctionAppACS/publish
-          # create deploy.zip at repo root
-          zip -r ../../../deploy.zip . -q
+          Compress-Archive -Path * -DestinationPath ../../../deploy.zip -Force
 
       - name: Deploy zip to Function App
-        shell: bash
+        shell: pwsh
         run: |
-          FN=${{ steps.parse.outputs.fn_name }}
-          RG=${{ steps.parse.outputs.rg_name }}
-          az functionapp deployment source config-zip -g "$RG" -n "$FN" --src ./deploy.zip
+          $FN = "${{ steps.parse.outputs.fn_name }}"
+          $RG = "${{ steps.parse.outputs.rg_name }}"
+          az functionapp deployment source config-zip -g $RG -n $FN --src ./deploy.zip
 
       - name: Configure app settings (KEY_VAULT_URI and CALLBACK_URI)
-        shell: bash
+        shell: pwsh
         run: |
-          FN=${{ steps.parse.outputs.fn_name }}
-          KV=${{ steps.parse.outputs.kv_name }}
-          RG=${{ steps.parse.outputs.rg_name }}
-          KV_URI="https://${KV}.vault.azure.net/"
-          CALLBACK="https://${FN}.azurewebsites.net/api/CallEvents"
-          az functionapp config appsettings set -g "$RG" -n "$FN" --settings KEY_VAULT_URI="$KV_URI" CALLBACK_URI="$CALLBACK"
+          $FN = "${{ steps.parse.outputs.fn_name }}"
+          $KV = "${{ steps.parse.outputs.kv_name }}"
+          $RG = "${{ steps.parse.outputs.rg_name }}"
+          $KV_URI = "https://$KV.vault.azure.net/"
+          $CALLBACK = "https://$FN.azurewebsites.net/api/CallEvents"
+          az functionapp config appsettings set -g $RG -n $FN --settings KEY_VAULT_URI=$KV_URI CALLBACK_URI=$CALLBACK
 
       - name: Fetch function key and smoke test
-        shell: bash
+        shell: pwsh
         run: |
-          FN=${{ steps.parse.outputs.fn_name }}
-          RG=${{ steps.parse.outputs.rg_name }}
-          KEY_JSON=$(az functionapp function keys list -g "$RG" -n "$FN" --function-name MakeCall -o json)
-          KEY=$(echo "$KEY_JSON" | jq -r '.default')
-          if [ -z "$KEY" ] || [ "$KEY" = "null" ]; then
-            echo "Could not fetch function key" >&2
+          $FN = "${{ steps.parse.outputs.fn_name }}"
+          $RG = "${{ steps.parse.outputs.rg_name }}"
+          $KEY_JSON = az functionapp function keys list -g $RG -n $FN --function-name MakeCall -o json | ConvertFrom-Json
+          $KEY = $KEY_JSON.default
+          if ([string]::IsNullOrEmpty($KEY)) {
+            Write-Error "Could not fetch function key"
             exit 1
-          fi
-          URL="https://${FN}.azurewebsites.net/api/MakeCall?code=${KEY}"
-          echo "Calling $URL (smoke test)"
-          curl -s -S -X POST "$URL" -H "Content-Type: application/json" \
-            -d '{"to":"+441234567890","from":"+15551234567"}' || true
+          }
+          $URL = "https://$FN.azurewebsites.net/api/MakeCall?code=$KEY"
+          Write-Host "Calling $URL (smoke test)"
+          $body = @{
+            to = "+441234567890"
+            from = "+15551234567"
+          } | ConvertTo-Json
+          try {
+            Invoke-RestMethod -Uri $URL -Method POST -Body $body -ContentType "application/json"
+          } catch {
+            Write-Host "Smoke test call failed (expected): $_"
+          }
