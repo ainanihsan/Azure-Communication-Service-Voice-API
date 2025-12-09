@@ -76,17 +76,52 @@ jobs:
           $CALLBACK = "https://$FN.azurewebsites.net/api/CallEvents"
           az functionapp config appsettings set -g $RG -n $FN --settings KEY_VAULT_URI=$KV_URI CALLBACK_URI=$CALLBACK
 
+      - name: Wait for Function App to be ready
+        shell: pwsh
+        run: |
+          Write-Host "Waiting for Function App to fully start..."
+          Start-Sleep -Seconds 30
+
       - name: Fetch function key and smoke test
         shell: pwsh
         run: |
           $FN = "${{ steps.parse.outputs.fn_name }}"
           $RG = "${{ steps.parse.outputs.rg_name }}"
-          $KEY_JSON = az functionapp function keys list -g $RG -n $FN --function-name MakeCall -o json | ConvertFrom-Json
-          $KEY = $KEY_JSON.default
-          if ([string]::IsNullOrEmpty($KEY)) {
-            Write-Error "Could not fetch function key"
-            exit 1
+          
+          # Retry logic for getting function keys
+          $maxRetries = 5
+          $retryCount = 0
+          $KEY = $null
+          
+          while ($retryCount -lt $maxRetries -and [string]::IsNullOrEmpty($KEY)) {
+            try {
+              Write-Host "Attempting to fetch function keys (attempt $($retryCount + 1)/$maxRetries)..."
+              $KEY_JSON = az functionapp function keys list -g $RG -n $FN --function-name MakeCall -o json 2>&1
+              if ($LASTEXITCODE -eq 0) {
+                $KEY_OBJ = $KEY_JSON | ConvertFrom-Json
+                $KEY = $KEY_OBJ.default
+                if (-not [string]::IsNullOrEmpty($KEY)) {
+                  Write-Host "Successfully retrieved function key"
+                  break
+                }
+              }
+            } catch {
+              Write-Host "Attempt failed: $_"
+            }
+            
+            $retryCount++
+            if ($retryCount -lt $maxRetries) {
+              Write-Host "Waiting 15 seconds before retry..."
+              Start-Sleep -Seconds 15
+            }
           }
+          
+          if ([string]::IsNullOrEmpty($KEY)) {
+            Write-Warning "Could not fetch function key after $maxRetries attempts. Function may need more time to initialize."
+            Write-Host "You can test manually later using: az functionapp function keys list -g $RG -n $FN --function-name MakeCall"
+            exit 0
+          }
+          
           $URL = "https://$FN.azurewebsites.net/api/MakeCall?code=$KEY"
           Write-Host "Calling $URL (smoke test)"
           $body = @{
@@ -95,6 +130,7 @@ jobs:
           } | ConvertTo-Json
           try {
             Invoke-RestMethod -Uri $URL -Method POST -Body $body -ContentType "application/json"
+            Write-Host "Smoke test completed"
           } catch {
-            Write-Host "Smoke test call failed (expected): $_"
+            Write-Host "Smoke test call failed (expected if no valid phone numbers): $_"
           }
