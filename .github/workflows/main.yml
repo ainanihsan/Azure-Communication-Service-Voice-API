@@ -103,6 +103,45 @@ jobs:
           
           Write-Host "✓ Application settings configured"
 
+      - name: Verify Key Vault access and secret
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $FN = "${{ steps.parse.outputs.fn_name }}"
+          $KV = "${{ steps.parse.outputs.kv_name }}"
+          $RG = "${{ steps.parse.outputs.rg_name }}"
+          
+          Write-Host "Checking Key Vault secret and permissions..."
+          
+          # Check if secret exists
+          $secretExists = az keyvault secret show --vault-name $KV --name AcsConnectionString --query value -o tsv 2>$null
+          if ($secretExists) {
+            Write-Host "✓ AcsConnectionString secret exists in Key Vault" -ForegroundColor Green
+          } else {
+            Write-Warning "AcsConnectionString secret not found in Key Vault"
+          }
+          
+          # Get Function App principal ID
+          $principalId = az functionapp identity show -g $RG -n $FN --query principalId -o tsv
+          Write-Host "Function App Principal ID: $principalId"
+          
+          # Check role assignment
+          $vaultId = az keyvault show -n $KV -g $RG --query id -o tsv
+          $roleAssignment = az role assignment list --assignee $principalId --scope $vaultId --role "Key Vault Secrets Officer" -o json | ConvertFrom-Json
+          
+          if ($roleAssignment -and $roleAssignment.Count -gt 0) {
+            Write-Host "✓ Function App has Key Vault Secrets Officer role" -ForegroundColor Green
+          } else {
+            Write-Warning "Function App does not have Key Vault Secrets Officer role"
+            Write-Host "Attempting to assign role..."
+            try {
+              az role assignment create --assignee-object-id $principalId --assignee-principal-type ServicePrincipal --role "Key Vault Secrets Officer" --scope $vaultId
+              Write-Host "✓ Role assigned successfully" -ForegroundColor Green
+            } catch {
+              Write-Warning "Could not assign role: $_"
+            }
+          }
+
       - name: Restart Function App and wait for it to be ready
         shell: pwsh
         run: |
@@ -193,10 +232,26 @@ jobs:
           } | ConvertTo-Json
           
           try {
-            $response = Invoke-RestMethod -Uri $URL -Method POST -Body $body -ContentType "application/json"
+            $response = Invoke-RestMethod -Uri $URL -Method POST -Body $body -ContentType "application/json" -ErrorAction Stop
             Write-Host "✓ Smoke test completed successfully" -ForegroundColor Green
             Write-Host "Response: $response"
           } catch {
-            Write-Host "Smoke test call result: $_" -ForegroundColor Yellow
-            Write-Host "(This is expected if phone numbers are not configured)"
+            $errorMsg = $_.Exception.Message
+            if ($errorMsg -like "*AcsConnectionString missing*") {
+              Write-Host ""
+              Write-Warning "Function cannot access ACS connection string from Key Vault"
+              Write-Host "This usually resolves after a few minutes as permissions propagate."
+              Write-Host ""
+              Write-Host "To verify manually:" -ForegroundColor Cyan
+              Write-Host "1. Wait 2-3 minutes for Azure RBAC to propagate"
+              Write-Host "2. Test again with the same command"
+              Write-Host "3. If still failing, check:"
+              Write-Host "   - Key Vault secret exists: az keyvault secret show --vault-name $KV --name AcsConnectionString"
+              Write-Host "   - Function has role: az role assignment list --assignee <PRINCIPAL_ID> --scope <VAULT_ID>"
+            } elseif ($errorMsg -like "*403*" -or $errorMsg -like "*Forbidden*") {
+              Write-Warning "Key Vault access denied - RBAC permissions may still be propagating"
+            } else {
+              Write-Host "Smoke test result: $errorMsg" -ForegroundColor Yellow
+              Write-Host "(Expected if phone numbers are not configured in ACS)"
+            }
           }
