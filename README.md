@@ -397,6 +397,33 @@ az monitor app-insights query --app $AI_ID --analytics-query "traces | where tim
 
 All metrics are automatically collected and available in Application Insights.
 
+## 📸 Screenshots
+
+### Successful GitHub Actions Workflow
+![GitHub Actions Success](screenshots/github-actions-success.png)
+
+The workflow completes successfully with all steps passing:
+- ✅ Provision Azure resources
+- ✅ Build .NET 8 Function App
+- ✅ Deploy to Azure
+- ✅ Configure Function App settings
+- ✅ Verify Key Vault access
+- ✅ Test Function endpoint
+
+### Expected Function Response (Without Phone Numbers)
+The Function returns a 500 error when phone numbers are not configured, which is expected behavior:
+```json
+{
+  "error": "Failed to create call: Response status code does not indicate success: 400 (Bad Request)."
+}
+```
+
+This demonstrates that:
+- Function is deployed and running ✓
+- Managed Identity is working ✓
+- Key Vault access is configured ✓
+- ACS SDK is initialized correctly ✓
+
 ## 📁 Project Structure
 
 ```
