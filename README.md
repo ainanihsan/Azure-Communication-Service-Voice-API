@@ -2,6 +2,26 @@
 
 This project demonstrates Infrastructure as Code (IaC) for Azure Communication Service with automated deployment using GitHub Actions. It provisions Azure resources and deploys a Function App that can make outbound calls via ACS Voice API.
 
+## 🚀 Quick Start (For Reviewers)
+
+**To evaluate this project:**
+
+1. **Clone this repository**
+2. **Ensure you have**: Azure CLI installed, logged in (`az login`), and PowerShell 7+
+3. **Run one command**:
+   ```powershell
+   cd scripts
+   ./provision.ps1
+   ```
+4. **That's it!** All Azure resources will be provisioned automatically.
+
+**To test the CI/CD pipeline** (optional):
+- Run `./scripts/setup-github-oidc.ps1 -GitHubUsername "YOUR_USERNAME" -GitHubRepo "YOUR_REPO"`
+- Add the 3 displayed secrets to GitHub
+- Run the workflow
+
+---
+
 ## 📋 Project Requirements
 
 ✅ **Infrastructure as Code**: Automated Azure resource provisioning  

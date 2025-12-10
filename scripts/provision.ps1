@@ -368,3 +368,6 @@ $output | ConvertTo-Json -Depth 8 | Out-File -FilePath $outputs -Encoding UTF8
 Write-Ok "Wrote outputs to $outputs"
 
 Write-Ok "Provision complete. Inspect outputs.json and verify resources in the portal or via az show commands."
+
+# Ensure successful exit
+exit 0
