@@ -304,6 +304,8 @@ Invoke-RestMethod -Uri $url -Method POST -Body $body -ContentType "application/j
 2. Use that number in the `from` field
 3. Use a valid destination number in the `to` field
 
+**Expected Result**: The function will return a 500 Internal Server Error if you haven't configured actual phone numbers in ACS. This is normal and indicates the function is working correctly but lacks valid phone configuration.
+
 ## 📊 Monitoring & Logging
 
 ### Application Insights (Optional)
