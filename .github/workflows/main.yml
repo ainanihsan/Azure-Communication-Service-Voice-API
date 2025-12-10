@@ -91,7 +91,17 @@ jobs:
           $RG = "${{ steps.parse.outputs.rg_name }}"
           $KV_URI = "https://$KV.vault.azure.net/"
           $CALLBACK = "https://$FN.azurewebsites.net/api/CallEvents"
-          az functionapp config appsettings set -g $RG -n $FN --settings KEY_VAULT_URI=$KV_URI CALLBACK_URI=$CALLBACK
+          
+          Write-Host "Setting application configuration..."
+          az functionapp config appsettings set `
+            -g $RG `
+            -n $FN `
+            --settings `
+              KEY_VAULT_URI="$KV_URI" `
+              CALLBACK_URI="$CALLBACK" `
+              FUNCTIONS_WORKER_RUNTIME="dotnet-isolated"
+          
+          Write-Host "✓ Application settings configured"
 
       - name: Restart Function App and wait for it to be ready
         shell: pwsh

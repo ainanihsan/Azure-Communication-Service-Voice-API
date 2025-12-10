@@ -141,7 +141,7 @@ try {
 Write-Info "Ensuring Function App $funcName"
 $fa = az functionapp show -n $funcName -g $rg 2>$null
 if (-not $fa) {
-  az functionapp create --resource-group $rg --consumption-plan-location $location --name $funcName --storage-account $storage --runtime dotnet --functions-version 4 --assign-identity | Out-Null
+  az functionapp create --resource-group $rg --consumption-plan-location $location --name $funcName --storage-account $storage --runtime dotnet-isolated --runtime-version 8 --functions-version 4 --assign-identity --os-type Windows | Out-Null
   Write-Ok "Function App created: $funcName"
 } else {
   Write-Ok "Function App exists: $funcName"
