@@ -308,8 +308,51 @@ az functionapp config appsettings set `
     --settings KEY_VAULT_URI=$kvUri | Out-Null
 Write-Ok "Configured KEY_VAULT_URI for Function App"
 
+# 12) Create and configure Application Insights for monitoring
+Write-Info "Ensuring Application Insights for monitoring"
+$aiName = "$funcName-insights"
+$ai = az monitor app-insights component show --app $aiName -g $rg 2>$null
+if (-not $ai) {
+  az monitor app-insights component create `
+    --app $aiName `
+    --location $location `
+    --resource-group $rg `
+    --application-type web | Out-Null
+  Write-Ok "Application Insights created: $aiName"
+} else {
+  Write-Ok "Application Insights exists: $aiName"
+}
 
-# 12) Save outputs
+# Get Application Insights connection string and configure Function App
+$aiConnString = az monitor app-insights component show --app $aiName -g $rg --query connectionString -o tsv
+if ($aiConnString) {
+  az functionapp config appsettings set `
+    --name $funcName `
+    --resource-group $rg `
+    --settings APPLICATIONINSIGHTS_CONNECTION_STRING=$aiConnString | Out-Null
+  Write-Ok "Configured Application Insights for Function App"
+}
+
+# 13) Enable diagnostic settings for ACS
+Write-Info "Configuring diagnostic settings for ACS"
+$acsId = az communication show --name $acsName -g $rg --query id -o tsv
+$aiId = az monitor app-insights component show --app $aiName -g $rg --query id -o tsv
+
+# Create diagnostic setting for ACS to send logs to Application Insights
+try {
+  az monitor diagnostic-settings create `
+    --name "acs-diagnostics" `
+    --resource $acsId `
+    --workspace $aiId `
+    --logs '[{"category":"CallAutomationOperations","enabled":true},{"category":"CallDiagnostics","enabled":true}]' `
+    --metrics '[{"category":"AllMetrics","enabled":true}]' 2>$null | Out-Null
+  Write-Ok "Diagnostic settings configured for ACS"
+} catch {
+  Write-Warn "Could not configure ACS diagnostic settings. This may require additional permissions or the feature may not be available in this region."
+}
+
+
+# 14) Save outputs
 $output = @{
   subscriptionId = $subId
   resourceGroup = $rg
@@ -318,6 +361,7 @@ $output = @{
   storage = @{ name = $storage }
   keyVault = @{ name = $kvName; id = $vaultId }
   functionApp = @{ name = $funcName; principalId = $funcPrincipalId }
+  applicationInsights = @{ name = $aiName; connectionString = $aiConnString }
   secretStored = $secretStored
 }
 $output | ConvertTo-Json -Depth 8 | Out-File -FilePath $outputs -Encoding UTF8

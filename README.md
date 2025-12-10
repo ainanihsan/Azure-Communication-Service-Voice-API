@@ -8,7 +8,20 @@ This project demonstrates Infrastructure as Code (IaC) for Azure Communication S
 ✅ **CI/CD Pipeline**: GitHub Actions workflow with OIDC authentication  
 ✅ **Voice API Integration**: Function App to invoke ACS for outbound calls  
 ✅ **Security Best Practices**: Managed Identity, Key Vault, RBAC, no hardcoded secrets  
-✅ **Monitoring**: Application Insights integration ready
+✅ **Monitoring & Logging**: Application Insights integration with ACS diagnostics
+
+## 🛠️ Why PowerShell/Azure CLI Instead of Terraform?
+
+This project uses **PowerShell with Azure CLI** for infrastructure provisioning rather than Terraform for the following reasons:
+
+1. **Native Azure Integration**: Azure CLI provides first-class support for all Azure services including ACS, with immediate access to new features
+2. **Simpler Setup**: No Terraform state management, backend configuration, or provider versioning
+3. **Easier Debugging**: Direct, readable commands that can be run independently for troubleshooting
+4. **Idempotent Scripts**: The provision script checks for existing resources and reuses them
+5. **Scripting Flexibility**: PowerShell enables complex logic, error handling, and Azure AD integration
+6. **Cross-Platform**: Works on Windows, Linux, and macOS with PowerShell Core
+
+**Note**: This approach is production-ready and follows Azure best practices. For organizations requiring Terraform, the PowerShell logic can be easily translated to HCL.
 
 ## Prerequisites
 
@@ -308,43 +321,61 @@ Invoke-RestMethod -Uri $url -Method POST -Body $body -ContentType "application/j
 
 ## 📊 Monitoring & Logging
 
-### Application Insights (Optional)
+### Automatic Configuration
 
-To enable Application Insights monitoring:
+The provision script automatically configures:
 
-```powershell
-# Create Application Insights
-az monitor app-insights component create `
-  --app fn-acs-demo-cli-001-insights `
-  --location swedencentral `
-  --resource-group rg-acs-demo-cli
-
-# Get the connection string
-$AI_CONN = az monitor app-insights component show `
-  --app fn-acs-demo-cli-001-insights `
-  -g rg-acs-demo-cli `
-  --query connectionString -o tsv
-
-# Configure Function App
-az functionapp config appsettings set `
-  -g rg-acs-demo-cli `
-  -n fn-acs-demo-cli-001 `
-  --settings APPLICATIONINSIGHTS_CONNECTION_STRING=$AI_CONN
-```
+1. **Application Insights** - Created and linked to the Function App
+2. **ACS Diagnostic Settings** - Logs sent to Application Insights
+3. **Function App Logging** - All invocations and errors tracked
 
 ### View Logs
+
+**Function App Logs** (Azure Portal):
+1. Navigate to your Function App → **Monitoring** → **Logs** or **Log stream**
+2. View real-time execution logs and errors
+
+**Application Insights** (Azure Portal):
+1. Navigate to Application Insights → **Logs**
+2. Query example:
+   ```kusto
+   traces
+   | where timestamp > ago(1h)
+   | where message contains "MakeCall"
+   | order by timestamp desc
+   ```
+
+**ACS Call Logs** (Azure Portal):
+1. Navigate to Communication Service → **Monitoring** → **Logs**
+2. Query example:
+   ```kusto
+   ACSCallAutomationIncomingOperations
+   | where TimeGenerated > ago(1h)
+   | project TimeGenerated, OperationName, ResultType, ResultDescription
+   | order by TimeGenerated desc
+   ```
+
+### PowerShell Commands
 
 ```powershell
 # Stream Function App logs
 az functionapp log tail -g rg-acs-demo-cli -n fn-acs-demo-cli-001
 
-# View ACS logs in Azure Portal
-# Navigate to: Communication Service → Monitoring → Logs
-# Query example:
-# ACSCallAutomationOperations
-# | where TimeGenerated > ago(1h)
-# | project TimeGenerated, OperationName, ResultType, ResultSignature
+# Query Application Insights
+$AI_ID = az monitor app-insights component show -g rg-acs-demo-cli --app fn-acs-demo-cli-001-insights --query id -o tsv
+az monitor app-insights query --app $AI_ID --analytics-query "traces | where timestamp > ago(1h) | limit 10"
 ```
+
+### Metrics to Monitor
+
+- **Function Execution Count**: Track API invocations
+- **Function Execution Duration**: Performance monitoring
+- **Function Failures**: Error rate tracking
+- **ACS Call Success Rate**: Voice call completion
+- **ACS Call Duration**: Average call length
+- **Key Vault Access**: Secret retrieval success/failures
+
+All metrics are automatically collected and available in Application Insights.
 
 ## 📁 Project Structure
 
